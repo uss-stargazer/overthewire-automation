@@ -13,6 +13,12 @@ The script works by creating a subdirectory for the wargame in the script root d
 the level passwords and other necessary files as you go through the wargame. When finished with a
 wargame, this directory can be compressed for proof of completion.
 
+Specific levels can also be accessed like
+
+    PS> ./Play-Wargame.ps1 bandit -Level 32
+
+but this doesn't allow smooth continuation like the normal usage.
+
 ## Bugs
 
 This was written pretty quickly, so it's very buggy; pull requests for fixes and features

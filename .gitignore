@@ -1,4 +1,6 @@
 otw.log
+*.tmp
+*.zip
 
 # Don't want to leak answer directories!
 bandit/

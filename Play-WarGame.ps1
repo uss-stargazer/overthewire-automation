@@ -13,7 +13,8 @@
 
 param (
     [Parameter(mandatory = $true)]
-    [string]$Wargame
+    [string]$Wargame,
+    [int]$Level = -1
 )
 
 $Wargame = $Wargame.ToLower()
@@ -91,6 +92,13 @@ class LevelError : System.Exception {
         $this.Message = $Message
         $this.InPreviousLevelElseCurrent = $InPreviousLevelElseCurrent
     }
+}
+
+# I need this because `$abcd -is [LevelError]` isn't working for some reason
+function isException() {
+    [OutputType([bool])]
+    param ( $Obj )
+    return $null -ne $Obj.Exception 
 }
 
 # Level types -----------------------------------------------------------------
@@ -212,9 +220,10 @@ switch ($global:WargameInfo.type) {
     }
 }
 
-$CurrentLevel = $LevelPasswords.Length - 1
+# Run-Level relies on `$CurrentLevel`. Really what this is doing is writing some pretty stuff to the console then running the current level in an 
+# attempt to get the password for the next level. This returns the recieved password if no errors occur or the error object if errors occur. 
+function Run-Level() {
 
-while ($true) {
     Clear-Content $LogFile # Reset log file
     Set-Clipboard $LevelPasswords[$CurrentLevel]
 
@@ -247,29 +256,64 @@ while ($true) {
     catch [LevelError] {
         Write-Host "[Error on Level $CurrentLevel]" -ForegroundColor Red -NoNewline
         Write-Host " $($_.Exception.Message)"
-
-        $TryAgainLevel = $CurrentLevel
-        if ($_.Exception.InPreviousLevelElseCurrent) {
-            if ($TryAgainLevel -eq 0) {
-                Write-Host "The error's prior to level 0. Aborting..." -ForegroundColor Red
-                exit 1
-            }
-            $TryAgainLevel--
-            $LevelPasswords = $LevelPasswords[0..$TryAgainLevel] # Remove previously generated password
-            Set-Content $PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push update
-        }
-
-        if (!(Check-UserInputForChar "Try Level $TryAgainLevel again? [y/n]" 'y')) {
-            Write-Host "${BLUE}[info]${STYLERESET} If your having technical issues, recommend debugging manually with logs ($LogFile)."
-            Write-Host "Aborting..." -ForegroundColor Red
-            exit 1
-        }
-        $CurrentLevel = $TryAgainLevel
-        continue
+        return $_
     }
 
-    $LevelPasswords += $RecievedPassword
-    $CurrentLevel++    
-    Set-Content $PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push updated (we may be pushing an incorrect password but it will be correct if wrong)
-}   
+    return $RecievedPassword
+}
+
+if ($Level -eq -1) {
+    # This is normal operating mode where the levels progress and state is updated along the way
+
+    $CurrentLevel = $LevelPasswords.Length - 1
+
+    while ($true) {
+
+        $RecievedPassword = Run-Level # All necesary information is stored in global variables
+        
+        if (isException $RecievedPassword) {
+            $ErrorObject = $RecievedPassword
+            $TryAgainLevel = $CurrentLevel
+            if ($ErrorObject.Exception.InPreviousLevelElseCurrent) {
+                if ($TryAgainLevel -eq 0) {
+                    Write-Host "The error's prior to level 0. Aborting..." -ForegroundColor Red
+                    exit 1
+                }
+                $TryAgainLevel--
+                $LevelPasswords = $LevelPasswords[0..$TryAgainLevel] # Remove previously generated password
+                Set-Content $PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push update
+            }
+            
+            if (!(Check-UserInputForChar "Try Level $TryAgainLevel again? [y/n]" 'y')) {
+                Write-Host "${BLUE}[info]${STYLERESET} If your having technical issues, recommend debugging manually with logs ($LogFile)."
+                Write-Host "Aborting..." -ForegroundColor Red
+                exit 1
+            }
+            $CurrentLevel = $TryAgainLevel
+            continue
+        }
+
+        $LevelPasswords += $RecievedPassword
+        $CurrentLevel++    
+        Set-Content $PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push updated (we may be pushing an incorrect password but it will be correct if wrong)
+    
+    }   
+    
+}
+else {
+    # This is the operating mode where a specific level is selected and runned, but no state is changed 
+
+    Write-Host "${BLUE}[info]${STYLERESET} Since you're entering a level from the past, no state or passwords will be changed; this is passive."
+    if ($Level -gt ($LevelPasswords.Length - 1)) {
+        Write-Host "Level $Level is out of range. Latest played is Level $($LevelPasswords.Length - 1)." -ForegroundColor Red
+        exit 1
+    }
+
+    $CurrentLevel = $Level
+    $RecievedPassword = Run-Level # Don't care about next password or errors because state is not effected
+    if (!(isException $RecievedPassword)) {
+        Write-Host "${YELLOW}Level $Level done.${STYLERESET} Password you copied (if you care): $RecievedPassword"
+    }
+}
+
 
