@@ -1,0 +1,4 @@
+otw.log
+
+# Don't want to leak answer directories!
+bandit/

@@ -1,0 +1,8 @@
+{
+  "bandit": {
+    "type": "ssh",
+    "host": "bandit.labs.overthewire.org",
+    "ssh-port": 2220,
+    "level-0-password": "bandit0"
+  }
+}
