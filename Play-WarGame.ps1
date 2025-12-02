@@ -17,19 +17,19 @@ param (
     [int]$Level = -1
 )
 
-$Wargame = $Wargame.ToLower()
-$WargamsDataFile = "$PSScriptRoot\wargames.json"
-$WargameDirectory = "$PSScriptRoot\$Wargame"
-$PasswordFile = "$WargameDirectory\passwords.txt"
-$LogFile = ".\otw.log"
+$global:Wargame = $Wargame.ToLower()
+$global:WargameDataFile = "$PSScriptRoot\wargames.json"
+$global:WargameDirectory = "$PSScriptRoot\$global:Wargame"
+$global:PasswordFile = "$global:WargameDirectory\passwords.txt"
+$global:LogFile = ".\otw.log"
 
-$WargameTitleCase = (Get-Culture).TextInfo.ToTitleCase($Wargame)
-$WargameDirectoryInfo = @"
-$WargameTitleCase Data Directory
+$global:WargameTitleCase = (Get-Culture).TextInfo.ToTitleCase($global:Wargame)
+$global:WargameDirectoryInfo = @"
+$global:WargameTitleCase Data Directory
 =======================
 
-This directory stores all the data for this wargame ($Wargame) which is
-part of [OverTheWire](https://overthewire.org/wargames/$Wargame).
+This directory stores all the data for this wargame ($global:Wargame) which is
+part of [OverTheWire](https://overthewire.org/wargames/$global:Wargame).
 
 Key structure
 -------------
@@ -135,8 +135,8 @@ class LevelInfo {
 
     LevelInfo([int]$LevelNumber) {
         $this.Number = $LevelNumber
-        $this.Title = "$WargameTitleCase $LevelNumber - OverTheWire"
-        $this.Url = "https://overthewire.org/wargames/$Wargame/$Wargame$($LevelNumber + 1).html" # +1 cause we're trying to get the password for the next level
+        $this.Title = "$global:WargameTitleCase $LevelNumber - OverTheWire"
+        $this.Url = "https://overthewire.org/wargames/$global:Wargame/$global:Wargame$($LevelNumber + 1).html" # +1 cause we're trying to get the password for the next level
     }
 }
 
@@ -175,7 +175,7 @@ function Open-LevelConsole {
     Move-Item $TempFile $ScriptFile
 
     # Really hacky way to get the PID and exit code of the process spawned by wt
-    $PIDTemp = "$PWD\$Wargame.pid.tmp"
+    $PIDTemp = "$PWD\$global:Wargame.pid.tmp"
     Set-Content $ScriptFile "Set-Content '$PIDTemp' `$PID;"
     Add-Content $ScriptFile $ScriptBlock.ToString()
 
@@ -194,7 +194,7 @@ function Handle-SSHLevel() {
     [OutputType([string])]
     param ( [int]$LevelNumber, [string]$Password )
 
-    $LevelUrl = Get-LevelUrl $Wargame $LevelNumber
+    $LevelUrl = Get-LevelUrl $global:Wargame $LevelNumber
     $LevelName = 
     Add-LogEntry "Level name" "$LevelName"
     Add-LogEntry "Level type" "http"
@@ -222,7 +222,7 @@ function Handle-SSHLevel() {
     }
     [string]$LevelHeader = $LevelHeader -join "`n"
         
-    $SSHCommand = "ssh.exe $Wargame$LevelNumber@$($global:WargameInfo.host) -p $($global:WargameInfo."ssh-port")"
+    $SSHCommand = "ssh.exe $global:Wargame$LevelNumber@$($global:WargameInfo.host) -p $($global:WargameInfo."ssh-port")"
     if ($SSHKeyFile) { $SSHCommand = "$SSHCommand -i '$SSHKeyFile'" }
     Add-LogEntry "Command" "$SSHCommand"
     
@@ -260,7 +260,7 @@ function Handle-SSHLevel() {
     Add-LogEntry "Raw next password" "$NextPassword"
 
     if ($NextPassword -match $PRIVATE_KEY_FORMAT_REGEX) {
-        $SSHKeyFileSubPath = "\$Wargame\$Wargame$($LevelNumber + 1)_sshkey.pem"
+        $SSHKeyFileSubPath = "\$global:Wargame\$global:Wargame$($LevelNumber + 1)_sshkey.pem"
         $SSHKeyFile = Join-Path $PSScriptRoot -ChildPath $SSHKeyFileSubPath
         Set-Content "$SSHKeyFile" $NextPassword
         Add-LogEntry "Note" "| Next password is in the format of an SSH private key.", "| Wrote raw private key to $SSHKeyFile"
@@ -275,23 +275,23 @@ function Handle-SSHLevel() {
 
 # Main ------------------------------------------------------------------------
 
-$global:WargameInfo = (Get-Content $WargamsDataFile | ConvertFrom-Json | Select-Object -Property $Wargame).$Wargame
+$global:WargameInfo = (Get-Content $global:WargameDataFile | ConvertFrom-Json | Select-Object -Property $global:Wargame).$global:Wargame
 if (!$global:WargameInfo -or !($global:WargameInfo.'level-0-password')) {
     throw "Specified wargame does not exist, is not registered, or doesn't have a level 0 password (register manually here: https://overthewire.org/wargames)"
 }
-Write-Host "${BLUE}[info]${STYLERESET} Information for the immediate last level is always placed in $LogFile"
-Write-Host "${BOLD}Wargame URL:${STYLERESET} https://overthewire.org/wargames/$Wargame/"
+Write-Host "${BLUE}[info]${STYLERESET} Information for the immediate last level is always placed in $global:LogFile"
+Write-Host "${BOLD}Wargame URL:${STYLERESET} https://overthewire.org/wargames/$global:Wargame/"
 
 # Create directory/pwfile and load passwords
-if (!(Test-Path "$WargameDirectory")) {
-    New-Item -ItemType Directory "$WargameDirectory" | Out-Null
-    Set-Content "$WargameDirectory\README.md" $WargameDirectoryInfo
+if (!(Test-Path "$global:WargameDirectory")) {
+    New-Item -ItemType Directory "$global:WargameDirectory" | Out-Null
+    Set-Content "$global:WargameDirectory\README.md" $global:WargameDirectoryInfo
 }
-if (!(Test-Path "$PasswordFile")) {
-    New-Item -ItemType File "$PasswordFile" | Out-Null
-    Set-Content "$PasswordFile" -Value $global:WargameInfo.'level-0-password' -NoNewline
+if (!(Test-Path "$global:PasswordFile")) {
+    New-Item -ItemType File "$global:PasswordFile" | Out-Null
+    Set-Content "$global:PasswordFile" -Value $global:WargameInfo.'level-0-password' -NoNewline
 }
-$LevelPasswords = Get-Content "$PasswordFile"
+$LevelPasswords = Get-Content "$global:PasswordFile"
 if ($LevelPasswords -is [string]) {
     $LevelPasswords = @($LevelPasswords)
 }
@@ -309,11 +309,11 @@ switch ($global:WargameInfo.type) {
 # attempt to get the password for the next level. This returns the recieved password if no errors occur or the error object if errors occur. 
 function Run-Level() {
 
-    Clear-Content $LogFile # Reset log file
+    Clear-Content $global:LogFile # Reset log file
     Set-Clipboard $LevelPasswords[$CurrentLevel]
 
     $LevelHeaderLine = "[ ${BLUE}Level $CurrentLevel${STYLERESET} "
-    $LevelUrlLine = " $(Get-LevelUrl $Wargame $CurrentLevel) --"
+    $LevelUrlLine = " $(Get-LevelUrl $global:Wargame $CurrentLevel) --"
     $HeaderPadding = $('-' * ($Host.UI.RawUI.BufferSize.Width - $LevelHeaderLine.Length - $LevelUrlLine.Length + 8 )) # +8 for ANSI escape codes 
     Write-Host "$LevelHeaderLine$HeaderPadding$LevelUrlLine"
 
@@ -366,11 +366,11 @@ if ($Level -eq -1) {
                 }
                 $TryAgainLevel--
                 $LevelPasswords = $LevelPasswords[0..$TryAgainLevel] # Remove previously generated password
-                Set-Content $PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push update
+                Set-Content $global:PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push update
             }
             
             if (!(Check-UserInputForChar "Try Level $TryAgainLevel again? [y/n]" 'y')) {
-                Write-Host "${BLUE}[info]${STYLERESET} If your having technical issues, recommend debugging manually with logs ($LogFile)."
+                Write-Host "${BLUE}[info]${STYLERESET} If your having technical issues, recommend debugging manually with logs ($global:LogFile)."
                 Write-Host "Aborting..." -ForegroundColor Red
                 exit 1
             }
@@ -380,7 +380,7 @@ if ($Level -eq -1) {
 
         $LevelPasswords += $RecievedPassword
         $CurrentLevel++    
-        Set-Content $PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push updated (we may be pushing an incorrect password but it will be correct if wrong)
+        Set-Content $global:PasswordFile -Value ($LevelPasswords -join "`n") -NoNewline # Push updated (we may be pushing an incorrect password but it will be correct if wrong)
     
     }   
     
