@@ -78,10 +78,72 @@ function Check-UserInputForChar() {
     return $c -eq $TargetChar
 }
 
-function Get-LevelUrl() {
+function Wait-ForCondition() {
+    param (
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$GetCondition,
+        [int]$TimoutMilliseconds = $null
+    )
+    
+    if ($TimoutMilliseconds -ne $null) { 
+        $TimerJob = Start-Job -Name Timer -ScriptBlock { Start-Sleep -Milliseconds $TimoutMilliseconds } 
+    }
+    while ($true) {
+        if ($GetCondition.Invoke() -eq $true) { break }
+        if ($TimerJob -and ($TimerJob.State -eq "Completed")) {
+            throw "Timed out before condition"
+        }
+    } 
+    if ($TimerJob) { $TimerJob.StopJob() }
+}
+
+function Get-WebBrowserPath() {
     [OutputType([string])]
-    param ( [string]$Wargame, [int]$LevelNumber )
-    return "https://overthewire.org/wargames/$Wargame/$Wargame$($LevelNumber + 1).html" # +1 cause we're trying to get the password for the next level
+    param ()
+
+    # Defaulting to Chrome
+    $PossibleLocations = @(
+        { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\ChromeHTML\shell\open\command')."(default)" -replace ' *--.*', '' },
+        # { return (Get-ItemProperty 'HKLM:\SOFTWARE\Mozilla\Mozilla Firefox\*\Main').PathToExe },
+        # { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\MSEdgeHTM\shell\open\command')."(default)" -replace ' *--.*', '' },
+        "C:\Program Files\Google\Chrome\Application\chrome.exe", "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", "$HOME\AppData\Local\Google\Chrome\Application\chrome.exe"
+        # "C:\Program Files\Mozilla Firefox\firefox.exe", "C:\Program Files (x86)\Mozilla Firefox\firefox.exe", "$HOME\AppData\Local\Mozilla Firefox\firefox.exe",
+        # "C:\Program Files\Microsoft\Edge\Application\msedge.exe", "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "$HOME\AppData\Local\Microsoft\Edge\Application\msedge.exe"
+    )
+
+    foreach ($Location in $PossibleLocations) {
+        if ($Location -is [scriptblock]) {
+            try {
+                $Location = $Location.Invoke()
+            }
+            catch {
+                continue
+            }
+        }
+        if ($Location -and ($Location.Length -gt 0) -and (Test-Path "$Location")) {
+            return $Location
+        }
+    }
+
+    return $null
+}
+
+class LevelInfo {
+    [int]$Number
+    [string]$Title
+    [string]$Url
+
+    LevelInfo([int]$LevelNumber) {
+        $this.Number = $LevelNumber
+        $this.Title = "$WargameTitleCase $LevelNumber - OverTheWire"
+        $this.Url = "https://overthewire.org/wargames/$Wargame/$Wargame$($LevelNumber + 1).html" # +1 cause we're trying to get the password for the next level
+    }
+}
+
+function Add-LogEntry() {
+    param ( [string]$Key, [string[]]$Value )
+    $Key = $Key.ToLower() -replace ' ', '-'
+    Add-LogEntry "$Key ---------`n$($Value -join "`n")`n$('-' * $Key.Length)----------"
 }
 
 class LevelError : System.Exception {
@@ -101,66 +163,87 @@ function isException() {
     return $null -ne $Obj.Exception 
 }
 
+<#
+Returns exit code of $Program
+#>
+function Open-LevelConsole {
+    [OutputType([System.Diagnostics.Process])]
+    param ( [scriptblock]$ScriptBlock )
+    
+    $TempFile = New-TemporaryFile 
+    $ScriptFile = "$($TempFile.FullName).ps1"
+    Move-Item $TempFile $ScriptFile
+
+    # Really hacky way to get the PID and exit code of the process spawned by wt
+    $PIDTemp = "$PWD\$Wargame.pid.tmp"
+    Set-Content $ScriptFile "Set-Content '$PIDTemp' `$PID;"
+    Add-Content $ScriptFile $ScriptBlock.ToString()
+
+    wt.exe -w 0 new-tab --title "$LevelName" powershell.exe "$ScriptFile" # Makes new wt tab
+    Start-Sleep -Seconds 1
+    $PSProcessId = Get-Content $PIDTemp
+    Remove-Item $PIDTemp -Force
+
+    $_ = $Process.Handle # https://stackoverflow.com/a/23797762/1479211 
+    return $Process
+}
+
 # Level types -----------------------------------------------------------------
 
 function Handle-SSHLevel() {
     [OutputType([string])]
     param ( [int]$LevelNumber, [string]$Password )
 
-    Add-Content $LogFile "level-type: ssh"
+    $LevelUrl = Get-LevelUrl $Wargame $LevelNumber
+    $LevelName = 
+    Add-LogEntry "Level name" "$LevelName"
+    Add-LogEntry "Level type" "http"
 
     if ($Password -match "^sshkey:($PATH_REGEX)`$") {
         $SSHKeyFile = Join-Path $PSScriptRoot -ChildPath $Matches[1] # The match will be a subpath
-        Add-Content $LogFile "auth-method: private key", "ssh-key-file: $SSHKeyFile"
+        Add-LogEntry "Authentication method" "private key"
+        Add-LogEntry "SSH key file" "$SSHKeyFile"
     }
     else {
-        Add-Content $LogFile "auth-method: password", "level-password: $Password"
+        Add-LogEntry "Authentication method" "password"
+        Add-LogEntry "Password" "$Password"
     }
 
-    $LevelName = "$WargameTitleCase $LevelNumber - OverTheWire"
-    [string[]]$LevelHeader = 
+    $LevelHeader = 
     "${MAGENTA}Password:${STYLERESET} $Password ${YELLOW}(copied)${STYLERESET}", 
-    "${BLUE}Level URL:${STYLERESET} $(Get-LevelUrl $Wargame $LevelNumber)", "",
+    "${BLUE}Level URL:${STYLERESET} $LevelUrl", 
+    "",
     "When you``ve found the password (or SSH private key) for the next level, copy it and exit the SSH session.",
     "${BOLD}Note:${STYLERESET} Do not close this window, exit via the ``exit`` command on the shell.", 
     "----------------"
+
     if ($SSHKeyFile) {
         $LevelHeader[0] = "${MAGENTA}SSH Key File:${STYLERESET} $SSHKeyFile"
     }
     [string]$LevelHeader = $LevelHeader -join "`n"
         
     $SSHCommand = "ssh.exe $Wargame$LevelNumber@$($global:WargameInfo.host) -p $($global:WargameInfo."ssh-port")"
-    if ($SSHKeyFile) {
-        $SSHCommand = "$SSHCommand -i '$SSHKeyFile'"
-    }
-    Add-Content $LogFile "command: $SSHCommand"
-    $LevelCommand = "Write-Host '$LevelHeader'\; $SSHCommand"
+    if ($SSHKeyFile) { $SSHCommand = "$SSHCommand -i '$SSHKeyFile'" }
+    Add-LogEntry "Command" "$SSHCommand"
     
-    # Really hacky way to get the PID and exit code of the process spawned by wt
-    $PIDTemp = "$PWD\${Wargame}.pid.tmp"
-    $LevelCommand = "Set-Content '$PIDTemp' `$PID\; $LevelCommand\; if (`$LASTEXITCODE -eq 0) { exit 0 }"
-    wt.exe -w 0 new-tab --title "$LevelName" powershell.exe -Command "$LevelCommand" # Makes new wt tab
-    Start-Sleep -Seconds 1
-    $PSProcessId = Get-Content $PIDTemp
-    Remove-Item $PIDTemp -Force
-    $TimerJob = Start-Job -Name Timer -ScriptBlock { Start-Sleep -Seconds 5 } # We want a limit on how long we wait for the ssh process 
-    do {
-        $SSHProcessInfo = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$PSProcessId'"
-        if ($TimerJob.State -eq "Completed") {
-            throw [LevelError]::new("SSH did not start correctly (are you connected to the internet?)", $false)
-        }
-    } until ($SSHProcessInfo -and $SSHProcessInfo[0] -and ($SSHProcessInfo[0].Name -eq "ssh.exe"))
-    $TimerJob.StopJob()
-    $Process = Get-Process -Id $SSHProcessInfo.ProcessId
-        
-    # or the above block could be replaced with below if ya don't want Windows Terminal features
-    # $Process = Start-Process powershell.exe -ArgumentList "-Command", "`"$LevelCommand`"" -PassThru # Always new window
-    
-    $_ = $Process.Handle # https://stackoverflow.com/a/23797762/1479211 
+    $ConsoleProcess = Open-LevelConsole [scriptblock]::Create(
+        "Write-Host '$LevelHeader'",
+        "$SSHCommand"
+    )
 
-    $Process.WaitForExit()
-    $SSHExitCode = $Process.ExitCode
-    Add-Content $LogFile "exit-code: $SSHExitCode"
+    # Make sure SSH starts and get the SSH subprocess from console process
+    $SSHProcess = $null
+    try {
+        Wait-ForCondition -TimoutMilliseconds 5000 {
+            $SSHProcessInfo = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($ConsoleProcess.Id)'"
+            return $SSHProcessInfo -and $SSHProcessInfo[0] -and ($SSHProcessInfo[0].Name -eq "ssh.exe")
+        }
+        $SSHProcess = Get-Process -Id $SSHProcessInfo.ProcessId
+    }
+    catch { throw [LevelError]::new("SSH did not start correctly (are you connected to the internet?)", $false) }
+    
+    $SSHExitCode = $SSHProcess.ExitCode
+    Add-LogEntry "Exit code" "$SSHExitCode"
     if (($SSHExitCode -ne 130) -and ($SSHExitCode -ne 0)) {
         # 130 is error code when SSH terminates because of internal exit (like `exit` command)
         Write-Host "`t[SSH exited with $($SSHExitCode)] " -ForegroundColor Red 
@@ -174,17 +257,19 @@ function Handle-SSHLevel() {
     if ($NextPassword -is [array]) {
         $NextPassword = $NextPassword -join "`n"
     }
-    Add-Content $LogFile "raw-next-password (below):", "$NextPassword"
+    Add-LogEntry "Raw next password" "$NextPassword"
 
     if ($NextPassword -match $PRIVATE_KEY_FORMAT_REGEX) {
         $SSHKeyFileSubPath = "\$Wargame\$Wargame$($LevelNumber + 1)_sshkey.pem"
         $SSHKeyFile = Join-Path $PSScriptRoot -ChildPath $SSHKeyFileSubPath
         Set-Content "$SSHKeyFile" $NextPassword
-        Add-Content $LogFile "| Next password is in the format of an SSH private key.", "| Wrote raw private key to $SSHKeyFile"
+        Add-LogEntry "Note" "| Next password is in the format of an SSH private key.", "| Wrote raw private key to $SSHKeyFile"
         $NextPassword = "sshkey:$SSHKeyFileSubPath"
     }
 
-    Add-Content $LogFile "processed-next-password: $NextPassword"
+    Add-LogEntry "Processed next password" "$NextPassword"
+    return $NextPassword
+}
     return $NextPassword
 }
 
