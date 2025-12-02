@@ -163,12 +163,9 @@ function isException() {
     return $null -ne $Obj.Exception 
 }
 
-<#
-Returns exit code of $Program
-#>
-function Open-LevelConsole {
+function Open-ConsoleWindow {
     [OutputType([System.Diagnostics.Process])]
-    param ( [scriptblock]$ScriptBlock )
+    param ( [scriptblock]$ScriptBlock, [string]$WindowTitle )
     
     $TempFile = New-TemporaryFile 
     $ScriptFile = "$($TempFile.FullName).ps1"
@@ -177,12 +174,14 @@ function Open-LevelConsole {
     # Really hacky way to get the PID and exit code of the process spawned by wt
     $PIDTemp = "$PWD\$global:Wargame.pid.tmp"
     Set-Content $ScriptFile "Set-Content '$PIDTemp' `$PID;"
-    Add-Content $ScriptFile $ScriptBlock.ToString()
 
-    wt.exe -w 0 new-tab --title "$LevelName" powershell.exe "$ScriptFile" # Makes new wt tab
+    Add-Content $ScriptFile $ScriptBlock.ToString()
+    wt.exe -w 0 new-tab --title "$WindowTitle" powershell.exe "$ScriptFile"
     Start-Sleep -Seconds 1
-    $PSProcessId = Get-Content $PIDTemp
+
+    $ProcessId = Get-Content $PIDTemp
     Remove-Item $PIDTemp -Force
+    $Process = Get-Process -Id $ProcessId
 
     $_ = $Process.Handle # https://stackoverflow.com/a/23797762/1479211 
     return $Process
@@ -194,9 +193,7 @@ function Handle-SSHLevel() {
     [OutputType([string])]
     param ( [int]$LevelNumber, [string]$Password )
 
-    $LevelUrl = Get-LevelUrl $global:Wargame $LevelNumber
-    $LevelName = 
-    Add-LogEntry "Level name" "$LevelName"
+    $Level = [LevelInfo]::new($LevelNumber)
     Add-LogEntry "Level type" "http"
 
     if ($Password -match "^sshkey:($PATH_REGEX)`$") {
@@ -211,7 +208,7 @@ function Handle-SSHLevel() {
 
     $LevelHeader = 
     "${MAGENTA}Password:${STYLERESET} $Password ${YELLOW}(copied)${STYLERESET}", 
-    "${BLUE}Level URL:${STYLERESET} $LevelUrl", 
+    "${BLUE}Level URL:${STYLERESET} $($Level.Url)", 
     "",
     "When you``ve found the password (or SSH private key) for the next level, copy it and exit the SSH session.",
     "${BOLD}Note:${STYLERESET} Do not close this window, exit via the ``exit`` command on the shell.", 
@@ -222,11 +219,11 @@ function Handle-SSHLevel() {
     }
     [string]$LevelHeader = $LevelHeader -join "`n"
         
-    $SSHCommand = "ssh.exe $global:Wargame$LevelNumber@$($global:WargameInfo.host) -p $($global:WargameInfo."ssh-port")"
+    $SSHCommand = "ssh.exe $global:Wargame$($Level.Number)@$($global:WargameInfo.host) -p $($global:WargameInfo."ssh-port")"
     if ($SSHKeyFile) { $SSHCommand = "$SSHCommand -i '$SSHKeyFile'" }
     Add-LogEntry "Command" "$SSHCommand"
     
-    $ConsoleProcess = Open-LevelConsole [scriptblock]::Create(
+    $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title [scriptblock]::Create(
         "Write-Host '$LevelHeader'",
         "$SSHCommand"
     )
