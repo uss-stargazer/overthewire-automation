@@ -194,7 +194,7 @@ function Handle-SSHLevel() {
     param ( [int]$LevelNumber, [string]$Password )
 
     $Level = [LevelInfo]::new($LevelNumber)
-    Add-LogEntry "Level type" "http"
+    Add-LogEntry "Level type" "ssh"
 
     if ($Password -match "^sshkey:($PATH_REGEX)`$") {
         $SSHKeyFile = Join-Path $PSScriptRoot -ChildPath $Matches[1] # The match will be a subpath
@@ -239,8 +239,10 @@ function Handle-SSHLevel() {
     }
     catch { throw [LevelError]::new("SSH did not start correctly (are you connected to the internet?)", $false) }
     
+    $SSHProcess.WaitForExit()
     $SSHExitCode = $SSHProcess.ExitCode
     Add-LogEntry "Exit code" "$SSHExitCode"
+
     if (($SSHExitCode -ne 130) -and ($SSHExitCode -ne 0)) {
         # 130 is error code when SSH terminates because of internal exit (like `exit` command)
         Write-Host "`t[SSH exited with $($SSHExitCode)] " -ForegroundColor Red 
@@ -267,6 +269,50 @@ function Handle-SSHLevel() {
     Add-LogEntry "Processed next password" "$NextPassword"
     return $NextPassword
 }
+
+function Handle-HTTPLevel() {
+    [OutputType([string])]
+    param ( [int]$LevelNumber, [string]$Password )
+    
+    $Level = [LevelInfo]::new($LevelNumber)
+    $LevelLocation = "http://$global:Wargame$($Level.Number).$($global:WargameInfo.host)/"
+    $LevelUsername = "$global:Wargame$($Level.Number)"
+    Add-LogEntry "Level type" "http"
+    Add-LogEntry "Level location" "$LevelLocation"
+
+    $LevelHeader = 
+    "${MAGENTA}Password:${STYLERESET} $Password ${YELLOW}(copied)${STYLERESET}", 
+    "${BLUE}Level URL:${STYLERESET} $LevelLocation", 
+    "",
+    "Press enter to open level in browser.",
+    "When you``ve found the password for the next level, copy it and exit ",
+    "${BOLD}Note:${STYLERESET} Do not close this window, exit only by ``Ctrl-C``.", 
+    "----------------"
+
+    $WebBrowser = Get-WebBrowserPath
+    if ($null -eq $WebBrowser) {
+        throw "Could not find path to web browser executable (looked for Chrome)"
+    }
+    $HTTPCommand = "& '$WebBrowser' '$LevelLocation' --new-window --guest"
+    Add-LogEntry "Command" "$HTTPCommand"
+
+    $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title [scriptblock]::Create(
+        "Write-Host '$LevelHeader'",
+        "`$Password = '$Password' | ConvertTo-SecureString -AsPlainText -Force",
+        "`$Credentials = New-Object System.Management.Automation.PSCredential('$LevelUsername', `$Password)",
+        "Invoke-WebRequest -Uri '$LevelLocation' -Credential `$Credentials", 
+        "while (`$true) { if ((Read-Host '>').Length -eq 0) { $HTTPCommand } }"
+    )
+
+    $ConsoleProcess.WaitForExit()
+    $SSHExitCode = $SSHProcess.ExitCode
+    Add-LogEntry "Exit code" "$SSHExitCode"
+
+    $NextPassword = Get-Clipboard
+    if ($NextPassword -is [array]) {
+        $NextPassword = $NextPassword -join "`n"
+    }
+    Add-LogEntry "Next password" "$NextPassword"
     return $NextPassword
 }
 
@@ -297,6 +343,14 @@ if ($LevelPasswords -is [string]) {
 $HandleLevel = $null
 switch ($global:WargameInfo.type) {
     "ssh" { $HandleLevel = ${function:Handle-SSHLevel} }
+    "http" { 
+        $HandleLevel = ${function:Handle-HTTPLevel}
+        Write-Host "${YELLOW}[warning]${STYLERESET} All Google Chrome tabs opened in Guest mode will be closed and deleted."
+        if (!(Check-UserInputForChar "Are you sure you're ready to continue? [y/n]" 'y')) {
+            Write-Host "Aborting..." -ForegroundColor Red
+            exit 1
+        }
+    }
     Default {
         throw "Wargame has invalid type in wargames.json"
     }
