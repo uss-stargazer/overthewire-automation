@@ -4,5 +4,10 @@
     "host": "bandit.labs.overthewire.org",
     "ssh-port": 2220,
     "level-0-password": "bandit0"
+  },
+  "natas": {
+    "type": "http",
+    "host": "natas.labs.overthewire.org",
+    "level-0-password": "natas0"
   }
 }
