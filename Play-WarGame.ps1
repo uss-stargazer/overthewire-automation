@@ -191,9 +191,8 @@ function Open-ConsoleWindow {
 
 function Handle-SSHLevel() {
     [OutputType([string])]
-    param ( [int]$LevelNumber, [string]$Password )
+    param ( [LevelInfo]$Level, [string]$Password )
 
-    $Level = [LevelInfo]::new($LevelNumber)
     Add-LogEntry "Level type" "ssh"
 
     if ($Password -match "^sshkey:($PATH_REGEX)`$") {
@@ -272,9 +271,8 @@ function Handle-SSHLevel() {
 
 function Handle-HTTPLevel() {
     [OutputType([string])]
-    param ( [int]$LevelNumber, [string]$Password )
+    param ( [LevelInfo]$Level, [string]$Password )
     
-    $Level = [LevelInfo]::new($LevelNumber)
     $LevelLocation = "http://$global:Wargame$($Level.Number).$($global:WargameInfo.host)/"
     $LevelUsername = "$global:Wargame$($Level.Number)"
     Add-LogEntry "Level type" "http"
@@ -360,15 +358,17 @@ switch ($global:WargameInfo.type) {
 # attempt to get the password for the next level. This returns the recieved password if no errors occur or the error object if errors occur. 
 function Run-Level() {
 
+    $Level = [LevelInfo]::new($CurrentLevel)
+
     Clear-Content $global:LogFile # Reset log file
-    Set-Clipboard $LevelPasswords[$CurrentLevel]
+    Set-Clipboard $LevelPasswords[$Level.Number]
 
-    $LevelHeaderLine = "[ ${BLUE}Level $CurrentLevel${STYLERESET} "
-    $LevelUrlLine = " $(Get-LevelUrl $global:Wargame $CurrentLevel) --"
+    $LevelHeaderLine = "[ ${BLUE}Level $($Level.Number)${STYLERESET} "
+    $LevelUrlLine = " $($Level.Url) --"
     $HeaderPadding = $('-' * ($Host.UI.RawUI.BufferSize.Width - $LevelHeaderLine.Length - $LevelUrlLine.Length + 8 )) # +8 for ANSI escape codes 
-    Write-Host "$LevelHeaderLine$HeaderPadding$LevelUrlLine"
+    Write-Host "${LevelHeaderLine}${HeaderPadding}${LevelUrlLine}"
 
-    $DisplayPassword = $LevelPasswords[$CurrentLevel]
+    $DisplayPassword = $LevelPasswords[$($Level.Number)]
     if ($DisplayPassword.Length -gt $MAX_PASSWORD_DISPLAY_LEN) {
         $DisplayPassword = "$($DisplayPassword.Substring(0, $MAX_PASSWORD_DISPLAY_LEN))..."
     }
@@ -380,17 +380,17 @@ function Run-Level() {
 
     # This verifies the previous password and generates a new password
     try {
-        $RecievedPassword = & $HandleLevel $CurrentLevel $LevelPasswords[$CurrentLevel]
+        $RecievedPassword = & $HandleLevel $Level $LevelPasswords[$($Level.Number)]
 
         # If the passwords are the same its probably wrong...
-        if ($RecievedPassword -eq $LevelPasswords[$CurrentLevel]) {
+        if ($RecievedPassword -eq $LevelPasswords[$($Level.Number)]) {
             if (!(Check-UserInputForChar "`t${YELLOW}Recieved password is same as the previous level. You sure it's right?${STYLERESET} [y/n]" 'y')) {
                 throw [LevelError]::new("Next level password is incorrect", $false)
             }
         }
     }
     catch [LevelError] {
-        Write-Host "[Error on Level $CurrentLevel]" -ForegroundColor Red -NoNewline
+        Write-Host "[Error on Level $($Level.Number)]" -ForegroundColor Red -NoNewline
         Write-Host " $($_.Exception.Message)"
         return $_
     }
