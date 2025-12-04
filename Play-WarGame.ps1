@@ -64,6 +64,12 @@ function CharToLower() {
     return [char](([char]$c).ToString().ToLower())
 }
 
+function ConvertTo-ScriptBlock() {
+    [OutputType([scriptblock])]
+    param ( [string[]]$Code )
+    return [scriptblock]::Create(($Code -join "`n"))
+}
+
 function Check-UserInputForChar() {
     [OutputType([bool])]
     param ( [string]$Prompt, [char]$TargetChar, [bool]$IgnoreCase = $true )
@@ -82,19 +88,27 @@ function Wait-ForCondition() {
     param (
         [Parameter(Mandatory = $true)]
         [scriptblock]$GetCondition,
-        [int]$TimoutMilliseconds = $null
+        [string[]]$ArgumentList = @(),
+        [int]$TimeoutMilliseconds = -1
     )
-    
-    if ($TimoutMilliseconds -ne $null) { 
-        $TimerJob = Start-Job -Name Timer -ScriptBlock { Start-Sleep -Milliseconds $TimoutMilliseconds } 
+    if ($TimeoutMilliseconds -ge 0) { 
+        $TimerJob = Start-Job -Name Timer `
+            -ScriptBlock { param ( [int]$Time ); Start-Sleep -Milliseconds $Time } `
+            -ArgumentList $TimeoutMilliseconds
     }
+    $Check = $null
     while ($true) {
-        if ($GetCondition.Invoke() -eq $true) { break }
+        $Check = Invoke-Command -ScriptBlock $GetCondition -ArgumentList $ArgumentList
+        if ($Check) { break }
+
         if ($TimerJob -and ($TimerJob.State -eq "Completed")) {
             throw "Timed out before condition"
         }
+        Start-Sleep -Milliseconds 10
     } 
+    
     if ($TimerJob) { $TimerJob.StopJob() }
+    return $Check
 }
 
 function Get-WebBrowserPath() {
@@ -143,7 +157,7 @@ class LevelInfo {
 function Add-LogEntry() {
     param ( [string]$Key, [string[]]$Value )
     $Key = $Key.ToLower() -replace ' ', '-'
-    Add-LogEntry "$Key ---------`n$($Value -join "`n")`n$('-' * $Key.Length)----------"
+    Add-Content $global:LogFile "$Key ---------`n$($Value -join "`n")`n$('-' * $Key.Length)----------"
 }
 
 class LevelError : System.Exception {
@@ -177,13 +191,13 @@ function Open-ConsoleWindow {
 
     Add-Content $ScriptFile $ScriptBlock.ToString()
     wt.exe -w 0 new-tab --title "$WindowTitle" powershell.exe "$ScriptFile"
-    Start-Sleep -Seconds 1
 
+    Wait-ForCondition { return Test-Path $PIDTemp } -TimeoutMilliseconds 1500 | Out-Null
     $ProcessId = Get-Content $PIDTemp
     Remove-Item $PIDTemp -Force
-    $Process = Get-Process -Id $ProcessId
+    try { $Process = Get-Process -Id $ProcessId }
+    catch { throw "Console program exited before it could be locked" }
 
-    $_ = $Process.Handle # https://stackoverflow.com/a/23797762/1479211 
     return $Process
 }
 
@@ -222,24 +236,29 @@ function Handle-SSHLevel() {
     if ($SSHKeyFile) { $SSHCommand = "$SSHCommand -i '$SSHKeyFile'" }
     Add-LogEntry "Command" "$SSHCommand"
     
-    $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title [scriptblock]::Create(
-        "Write-Host '$LevelHeader'",
-        "$SSHCommand"
-    )
+    try {
+        $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title (ConvertTo-ScriptBlock "",
+            "Write-Host '$LevelHeader'",
+            "$SSHCommand"
+        )
+    }
+    catch { Write-Host $_; throw [LevelError]::new("SSH did not start correctly (are you connected to the internet?)", $false) }
 
     # Make sure SSH starts and get the SSH subprocess from console process
-    $SSHProcess = $null
-    try {
-        Wait-ForCondition -TimoutMilliseconds 5000 {
-            $SSHProcessInfo = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($ConsoleProcess.Id)'"
-            return $SSHProcessInfo -and $SSHProcessInfo[0] -and ($SSHProcessInfo[0].Name -eq "ssh.exe")
+    $SSHProcessId = Wait-ForCondition -TimeoutMilliseconds 10000 {
+        $SSHProcessInfo = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($ConsoleProcess.Id)'"
+        if ($SSHProcessInfo -and $SSHProcessInfo[0] -and ($SSHProcessInfo[0].Name -eq "ssh.exe")) {
+            return $SSHProcessInfo[0].ProcessId # If this is every 0, it won't work (but I don't think process Ids can or would be 0)
         }
-        $SSHProcess = Get-Process -Id $SSHProcessInfo.ProcessId
+        return $null
     }
-    catch { throw [LevelError]::new("SSH did not start correctly (are you connected to the internet?)", $false) }
-    
+    $SSHProcess = Get-Process -Id $SSHProcessId
+
+    $_ = $SSHProcess.Handle # https://stackoverflow.com/a/23797762/1479211 
+
     $SSHProcess.WaitForExit()
     $SSHExitCode = $SSHProcess.ExitCode
+    Write-Host "exited: $($SSHExitCode)"
     Add-LogEntry "Exit code" "$SSHExitCode"
 
     if (($SSHExitCode -ne 130) -and ($SSHExitCode -ne 0)) {
@@ -294,11 +313,11 @@ function Handle-HTTPLevel() {
     $HTTPCommand = "& '$WebBrowser' '$LevelLocation' --new-window --guest"
     Add-LogEntry "Command" "$HTTPCommand"
 
-    $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title [scriptblock]::Create(
+    $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title ( ConvertTo-ScriptBlock "",
         "Write-Host '$LevelHeader'",
         "`$Password = '$Password' | ConvertTo-SecureString -AsPlainText -Force",
         "`$Credentials = New-Object System.Management.Automation.PSCredential('$LevelUsername', `$Password)",
-        "Invoke-WebRequest -Uri '$LevelLocation' -Credential `$Credentials", 
+        "Invoke-WebRequest -Uri '$LevelLocation' -Credential `$Credentials",
         "while (`$true) { if ((Read-Host '>').Length -eq 0) { $HTTPCommand } }"
     )
 
