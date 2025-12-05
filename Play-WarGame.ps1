@@ -352,8 +352,9 @@ function Handle-HTTPLevel() {
         $Credentials = Invoke-Command -ScriptBlock ([scriptblock]::Create($GetCredentialsCommand))
         $Location = $LevelUrl
         $WebResponse = Invoke-Expression $CurlCommand
+        if (!$WebResponse) { exit 1 }
+
         $WebResponse
-        # err on failure
 
         $Quit = $false
         while (!$Quit) {
@@ -396,7 +397,7 @@ function Handle-HTTPLevel() {
                             $Location = $Location.Substring(0, $OIdx).Trim()
                         }
 
-                        # err on failure
+            
                         $WebResponse = Invoke-Expression $CurlCommand
                         $WebResponse
                         if ($OutFile) {
@@ -425,10 +426,13 @@ function Handle-HTTPLevel() {
     $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title `
         -ScriptBlock $HTTPConsoleScript `
         -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $CurlCommand, $BrowserCommand
-
+            
     $ConsoleProcess.WaitForExit()
-    $SSHExitCode = $SSHProcess.ExitCode
-    Add-LogEntry "Exit code" "$SSHExitCode"
+    $ConsoleExitCode = $ConsoleProcess.ExitCode
+    Add-LogEntry "Exit code" "$ConsoleExitCode"
+    if ($ConsoleExitCode -ne 0) {
+        throw [LevelError]::new("Web request failure", $false) 
+    } 
 
     $NextPassword = Get-Clipboard
     if ($NextPassword -is [array]) {
