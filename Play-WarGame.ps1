@@ -353,6 +353,7 @@ function Handle-HTTPLevel() {
                             "content [<cmd>]    Display response data (probably HTML). If <cmd>, use <cmd> as editor",
                             "header             Display response headers",
                             "raw                Display full raw response"
+                            "exec ...           Execute a command in Powershell"
                         ) -join "`n")
                     break
                 }
@@ -370,6 +371,11 @@ function Handle-HTTPLevel() {
                 "header" { Write-Host $WebResponse.Headers; break }
                 "raw" { Write-Host $WebResponse.RawContent; break }
                 { $_ -eq "open" -or $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
+                { $_ -match "^exec" } { 
+                    if ($_ -match "exec\s+(.+)") {
+                        powershell.exe -Command $Matches[1]
+                    }
+                }
                 { "quit", "exit" -contains $_ } { $Quit = $true; break }
                 Default {
                     Write-Host "Invalid command" -ForegroundColor Red
