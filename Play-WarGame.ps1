@@ -179,7 +179,12 @@ function isException() {
 
 function Open-ConsoleWindow {
     [OutputType([System.Diagnostics.Process])]
-    param ( [scriptblock]$ScriptBlock, [string]$WindowTitle )
+    param ( 
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock,
+        [string[]]$ArgumentList = @(),
+        [string]$WindowTitle
+    )
     
     $TempFile = New-TemporaryFile 
     $ScriptFile = "$($TempFile.FullName).ps1"
@@ -188,9 +193,23 @@ function Open-ConsoleWindow {
     # Really hacky way to get the PID and exit code of the process spawned by wt
     $PIDTemp = "$PWD\$global:Wargame.pid.tmp"
     Set-Content $ScriptFile "Set-Content '$PIDTemp' `$PID;"
+    
+    # Parse script block and argument list
+    $ArgumentList = $ArgumentList | ForEach-Object {
+        return """$(
+            $_ -replace '\`', '``' -replace '"', '""' `
+               -replace '\$', '`$' -replace "`n", '`n'
+        )"""
+    } 
 
-    Add-Content $ScriptFile $ScriptBlock.ToString()
-    wt.exe -w 0 new-tab --title "$WindowTitle" powershell.exe "$ScriptFile"
+    $ScriptContents = (
+        "`$script = { $($ScriptBlock.ToString()) };", 
+        "Invoke-Command -ScriptBlock `$script -ArgumentList @($($ArgumentList -join ", "))",
+        "exit 0"
+    ) -join "`n"
+    Add-Content $ScriptFile $ScriptContents
+
+    wt.exe -w 0 new-tab --title "$WindowTitle" powershell.exe "$ScriptFile" -Exit
 
     Wait-ForCondition { return Test-Path $PIDTemp } -TimeoutMilliseconds 1500 | Out-Null
     $ProcessId = Get-Content $PIDTemp
@@ -219,13 +238,14 @@ function Handle-SSHLevel() {
         Add-LogEntry "Password" "$Password"
     }
 
-    $LevelHeader = 
-    "${MAGENTA}Password:${STYLERESET} $Password ${YELLOW}(copied)${STYLERESET}", 
-    "${BLUE}Level URL:${STYLERESET} $($Level.Url)", 
-    "",
-    "When you``ve found the password (or SSH private key) for the next level, copy it and exit the SSH session.",
-    "${BOLD}Note:${STYLERESET} Do not close this window, exit via the ``exit`` command on the shell.", 
-    "----------------"
+    $LevelHeader = (
+        "${MAGENTA}Password:${STYLERESET} $Password ${YELLOW}(copied)${STYLERESET}", 
+        "${BLUE}Level URL:${STYLERESET} $($Level.Url)", 
+        "",
+        "When you``ve found the password (or SSH private key) for the next level, copy it and exit the SSH session.",
+        "${BOLD}Note:${STYLERESET} Do not close this window, exit via the ``exit`` command on the shell.", 
+        "----------------"
+    ) -join "`n"
 
     if ($SSHKeyFile) {
         $LevelHeader[0] = "${MAGENTA}SSH Key File:${STYLERESET} $SSHKeyFile"
@@ -258,7 +278,6 @@ function Handle-SSHLevel() {
 
     $SSHProcess.WaitForExit()
     $SSHExitCode = $SSHProcess.ExitCode
-    Write-Host "exited: $($SSHExitCode)"
     Add-LogEntry "Exit code" "$SSHExitCode"
 
     if (($SSHExitCode -ne 130) -and ($SSHExitCode -ne 0)) {
@@ -297,29 +316,72 @@ function Handle-HTTPLevel() {
     Add-LogEntry "Level type" "http"
     Add-LogEntry "Level location" "$LevelLocation"
 
-    $LevelHeader = 
-    "${MAGENTA}Password:${STYLERESET} $Password ${YELLOW}(copied)${STYLERESET}", 
-    "${BLUE}Level URL:${STYLERESET} $LevelLocation", 
-    "",
-    "Press enter to open level in browser.",
-    "When you``ve found the password for the next level, copy it and exit ",
-    "${BOLD}Note:${STYLERESET} Do not close this window, exit only by ``Ctrl-C``.", 
-    "----------------"
+    $LevelHeader = (
+        "${MAGENTA}Password:${STYLERESET} $Password ${YELLOW}(copied)${STYLERESET}", 
+        "${BLUE}Level URL:${STYLERESET} $LevelLocation", 
+        "",
+        "Enter ``help`` in console for commands.",
+        "When you``ve found the password for the next level, copy it and exit ",
+        "${BOLD}Note:${STYLERESET} Do not close this window, exit only by ``Ctrl-C``.", 
+        "----------------"
+    ) -join "`n"
 
-    $WebBrowser = Get-WebBrowserPath
-    if ($null -eq $WebBrowser) {
-        throw "Could not find path to web browser executable (looked for Chrome)"
-    }
-    $HTTPCommand = "& '$WebBrowser' '$LevelLocation' --new-window --guest"
-    Add-LogEntry "Command" "$HTTPCommand"
-
-    $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title ( ConvertTo-ScriptBlock "",
-        "Write-Host '$LevelHeader'",
+    $CurlCommand = (
         "`$Password = '$Password' | ConvertTo-SecureString -AsPlainText -Force",
         "`$Credentials = New-Object System.Management.Automation.PSCredential('$LevelUsername', `$Password)",
-        "Invoke-WebRequest -Uri '$LevelLocation' -Credential `$Credentials",
-        "while (`$true) { if ((Read-Host '>').Length -eq 0) { $HTTPCommand } }"
-    )
+        "Invoke-WebRequest -Uri '$LevelLocation' -Credential `$Credentials"
+    ) -join "; "
+    Add-LogEntry "Command" "$CurlCommand"
+    
+    $WebBrowser = Get-WebBrowserPath
+    if ($null -eq $WebBrowser) { throw "Could not find path to web browser executable (looked for Chrome)" }
+    $BrowserCommand = "& '$WebBrowser' '$LevelLocation' --new-window --guest"
+    Add-LogEntry "Command" "$BrowserCommand"
+
+    $HTTPConsoleScript = {
+        param ([string]$Header, [string]$CurlCommand, [string]$BrowserCommand )
+        Write-Host "$Header"
+        $WebResponse = Invoke-Command -ScriptBlock ([scriptblock]::Create($CurlCommand))
+        $WebResponse
+
+        $Quit = $false
+        while (!$Quit) {
+            switch ((Read-Host -Prompt ">").Trim().ToLower()) {
+                "help" { 
+                    Write-Host ((
+                            "open, [enter]      Open level in browser",
+                            "content [<cmd>]    Display response data (probably HTML). If <cmd>, use <cmd> as editor",
+                            "header             Display response headers",
+                            "raw                Display full raw response"
+                        ) -join "`n")
+                    break
+                }
+                { $_ -match "content" } { 
+                    if (($_ -match "content\s+(.+)") -and ($Matches[1].Length -gt 0)) {
+                        $TempFile = New-TemporaryFile
+                        Set-Content $TempFile $WebResponse.Content
+                        & "$($Matches[1])" "$($TempFile.FullName)"
+                    }
+                    else {
+                        Write-Host $WebResponse.Content
+                    }
+                    break
+                }
+                "header" { Write-Host $WebResponse.Headers; break }
+                "raw" { Write-Host $WebResponse.RawContent; break }
+                { $_ -eq "open" -or $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
+                { "quit", "exit" -contains $_ } { $Quit = $true; break }
+                Default {
+                    Write-Host "Invalid command" -ForegroundColor Red
+                    break
+                }
+            }
+        }
+    }
+
+    $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title `
+        -ScriptBlock $HTTPConsoleScript `
+        -ArgumentList $LevelHeader, $CurlCommand, $BrowserCommand
 
     $ConsoleProcess.WaitForExit()
     $SSHExitCode = $SSHProcess.ExitCode
