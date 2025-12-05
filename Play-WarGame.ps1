@@ -422,14 +422,7 @@ if ($LevelPasswords -is [string]) {
 $HandleLevel = $null
 switch ($global:WargameInfo.type) {
     "ssh" { $HandleLevel = ${function:Handle-SSHLevel} }
-    "http" { 
-        $HandleLevel = ${function:Handle-HTTPLevel}
-        Write-Host "${YELLOW}[warning]${STYLERESET} All Google Chrome tabs opened in Guest mode will be closed and deleted."
-        if (!(Check-UserInputForChar "Are you sure you're ready to continue? [y/n]" 'y')) {
-            Write-Host "Aborting..." -ForegroundColor Red
-            exit 1
-        }
-    }
+    "http" { $HandleLevel = ${function:Handle-HTTPLevel} }
     Default {
         throw "Wargame has invalid type in wargames.json"
     }
