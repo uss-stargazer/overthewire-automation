@@ -326,11 +326,13 @@ function Handle-HTTPLevel() {
         "----------------"
     ) -join "`n"
 
-    $CurlCommand = (
+    $GetCredentialsCommand = (
         "`$Password = '$Password' | ConvertTo-SecureString -AsPlainText -Force",
-        "`$Credentials = New-Object System.Management.Automation.PSCredential('$LevelUsername', `$Password)",
-        "Invoke-WebRequest -Uri '$LevelLocation' -Credential `$Credentials"
+        "return New-Object System.Management.Automation.PSCredential('$LevelUsername', `$Password)"
     ) -join "; "
+    Add-LogEntry "Command" "$GetCredentialsCommand"
+
+    $CurlCommand = "Invoke-WebRequest -Uri `$Location -Credential `$Credentials"
     Add-LogEntry "Command" "$CurlCommand"
     
     $WebBrowser = Get-WebBrowserPath
@@ -339,25 +341,38 @@ function Handle-HTTPLevel() {
     Add-LogEntry "Command" "$BrowserCommand"
 
     $HTTPConsoleScript = {
-        param ([string]$Header, [string]$CurlCommand, [string]$BrowserCommand )
+        param (
+            [string]$Header,
+            [string]$LevelUrl,
+            [string]$GetCredentialsCommand,
+            [string]$CurlCommand,
+            [string]$BrowserCommand
+        )
         Write-Host "$Header"
-        $WebResponse = Invoke-Command -ScriptBlock ([scriptblock]::Create($CurlCommand))
+        $Credentials = Invoke-Command -ScriptBlock ([scriptblock]::Create($GetCredentialsCommand))
+        $Location = $LevelUrl
+        $WebResponse = Invoke-Expression $CurlCommand
         $WebResponse
+        # err on failure
 
         $Quit = $false
         while (!$Quit) {
             switch ((Read-Host -Prompt ">").Trim().ToLower()) {
                 "help" { 
                     Write-Host ((
-                            "open, [enter]      Open level in browser",
-                            "content [<cmd>]    Display response data (probably HTML). If <cmd>, use <cmd> as editor",
-                            "header             Display response headers",
-                            "raw                Display full raw response"
-                            "exec ...           Execute a command in Powershell"
+                            "# When you use the curl command, a web response is 'locked in'.",
+                            "# The main website url is locked in by default.",
+                            "",
+                            "open, [enter]          Open level url in browser",
+                            "curl <url> [-o <out>]  Invoke-WebRequest with website credentials for any url and lock it in. If <out>, write to file too",
+                            "content [<cmd>]        Display response data for locked (probably HTML). If <cmd>, use <cmd> as editor",
+                            "header                 Display response headers",
+                            "raw                    Display full raw response",
+                            "exec ...               Execute a command in Powershell"
                         ) -join "`n")
                     break
                 }
-                { $_ -match "content" } { 
+                { $_ -match "^content" } { 
                     if (($_ -match "content\s+(.+)") -and ($Matches[1].Length -gt 0)) {
                         $TempFile = New-TemporaryFile
                         Set-Content $TempFile $WebResponse.Content
@@ -371,6 +386,28 @@ function Handle-HTTPLevel() {
                 "header" { Write-Host $WebResponse.Headers; break }
                 "raw" { Write-Host $WebResponse.RawContent; break }
                 { $_ -eq "open" -or $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
+                { $_ -match "^curl" } {
+                    if ($_ -match "curl\s+(.+)") {
+                        [string]$Location = $Matches[1]
+                        $OutFile = $null
+                        $OIdx = $Location.LastIndexOf("-o")
+                        if ($OIdx -gt 0) {
+                            $OutFile = $Location.Substring($OIdx + 2).Trim()
+                            $Location = $Location.Substring(0, $OIdx).Trim()
+                        }
+
+                        # err on failure
+                        $WebResponse = Invoke-Expression $CurlCommand
+                        $WebResponse
+                        if ($OutFile) {
+                            $ResponseStream = $WebResponse.RawContentStream
+                            $OutStream = [System.IO.FileStream]::new($OutFile, [System.IO.FileMode]::Create)
+                            $ResponseStream.CopyTo($OutStream)
+                            $OutStream.Close()
+                            $ResponseStream.Close()
+                        }
+                    }
+                }
                 { $_ -match "^exec" } { 
                     if ($_ -match "exec\s+(.+)") {
                         powershell.exe -Command $Matches[1]
@@ -387,7 +424,7 @@ function Handle-HTTPLevel() {
 
     $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title `
         -ScriptBlock $HTTPConsoleScript `
-        -ArgumentList $LevelHeader, $CurlCommand, $BrowserCommand
+        -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $CurlCommand, $BrowserCommand
 
     $ConsoleProcess.WaitForExit()
     $SSHExitCode = $SSHProcess.ExitCode
