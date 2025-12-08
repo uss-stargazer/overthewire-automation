@@ -262,7 +262,7 @@ function Handle-SSHLevel() {
             "$SSHCommand"
         )
     }
-    catch { Write-Host $_; throw [LevelError]::new("SSH did not start correctly (are you connected to the internet?)", $false) }
+    catch { throw [LevelError]::new("SSH did not start correctly (are you connected to the internet?)", $false) }
 
     # Make sure SSH starts and get the SSH subprocess from console process
     $SSHProcessId = Wait-ForCondition -TimeoutMilliseconds 10000 {
@@ -272,7 +272,11 @@ function Handle-SSHLevel() {
         }
         return $null
     }
+    Start-Sleep -Milliseconds 500 # Give it time to start and throw any erros
     $SSHProcess = Get-Process -Id $SSHProcessId
+    if (!$SSHProcess) {
+        throw [LevelError]::new("SSH did not start correctly (perhaps you need to clear SSH cache?)", $false)
+    }
 
     $_ = $SSHProcess.Handle # https://stackoverflow.com/a/23797762/1479211 
 
@@ -337,7 +341,7 @@ function Handle-HTTPLevel() {
     
     $WebBrowser = Get-WebBrowserPath
     if ($null -eq $WebBrowser) { throw "Could not find path to web browser executable (looked for Chrome)" }
-    $BrowserCommand = "& '$WebBrowser' '$LevelLocation' --new-window --guest"
+    $BrowserCommand = "& '$WebBrowser' '$LevelLocation' --guest"
     Add-LogEntry "Command" "$BrowserCommand"
 
     $HTTPConsoleScript = {
@@ -345,15 +349,12 @@ function Handle-HTTPLevel() {
             [string]$Header,
             [string]$LevelUrl,
             [string]$GetCredentialsCommand,
-            [string]$CurlCommand,
             [string]$BrowserCommand
         )
         Write-Host "$Header"
         $Credentials = Invoke-Command -ScriptBlock ([scriptblock]::Create($GetCredentialsCommand))
-        $Location = $LevelUrl
-        $WebResponse = Invoke-Expression $CurlCommand
+        $WebResponse = Invoke-Expression "Invoke-WebRequest -Uri '$LevelUrl' -Credential `$Credentials"
         if (!$WebResponse) { exit 1 }
-
         $WebResponse
 
         $Quit = $false
@@ -362,16 +363,41 @@ function Handle-HTTPLevel() {
                 "help" { 
                     Write-Host ((
                             "# When you use the curl command, a web response is 'locked in'.",
-                            "# The main website url is locked in by default.",
+                            "# The main website url is locked in by default and can be accessed by ```$LevelUrl``",
                             "",
-                            "open, [enter]          Open level url in browser",
+                            "open, [enter]          Open locked in url in browser",
                             "curl <url> [-o <out>]  Invoke-WebRequest with website credentials for any url and lock it in. If <out>, write to file too",
                             "content [<cmd>]        Display response data for locked (probably HTML). If <cmd>, use <cmd> as editor",
                             "header                 Display response headers",
                             "raw                    Display full raw response",
-                            "exec ...               Execute a command in Powershell"
+                            "exec ...               Execute a command in Powershell",
+                            "exit, quit             Exit"
                         ) -join "`n")
                     break
+                }
+                { $_ -eq "open" -or $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
+                { $_ -match "^curl" } {
+                    if ($_ -match "curl\s+(.+)") {
+                        $Location = $Matches[1]
+                        $OutFile = $null
+                        $OIdx = $Location.LastIndexOf("-o")
+                        if ($OIdx -gt 0) {
+                            $OutFile = $Location.Substring($OIdx + 2).Trim()
+                            $Location = $Location.Substring(0, $OIdx).Trim()
+                        }
+            
+                        $WebResponse = Invoke-Expression "Invoke-WebRequest -Uri ""$Location"" -Credential `$Credentials"
+                        if (!$WebResponse) { break }
+                        $WebResponse
+
+                        if ($OutFile) {
+                            $ResponseStream = $WebResponse.RawContentStream
+                            $OutStream = [System.IO.FileStream]::new($OutFile, [System.IO.FileMode]::Create)
+                            $ResponseStream.CopyTo($OutStream)
+                            $OutStream.Close()
+                            $ResponseStream.Close()
+                        }
+                    }
                 }
                 { $_ -match "^content" } { 
                     if (($_ -match "content\s+(.+)") -and ($Matches[1].Length -gt 0)) {
@@ -386,35 +412,12 @@ function Handle-HTTPLevel() {
                 }
                 "header" { Write-Host $WebResponse.Headers; break }
                 "raw" { Write-Host $WebResponse.RawContent; break }
-                { $_ -eq "open" -or $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
-                { $_ -match "^curl" } {
-                    if ($_ -match "curl\s+(.+)") {
-                        [string]$Location = $Matches[1]
-                        $OutFile = $null
-                        $OIdx = $Location.LastIndexOf("-o")
-                        if ($OIdx -gt 0) {
-                            $OutFile = $Location.Substring($OIdx + 2).Trim()
-                            $Location = $Location.Substring(0, $OIdx).Trim()
-                        }
-
-            
-                        $WebResponse = Invoke-Expression $CurlCommand
-                        $WebResponse
-                        if ($OutFile) {
-                            $ResponseStream = $WebResponse.RawContentStream
-                            $OutStream = [System.IO.FileStream]::new($OutFile, [System.IO.FileMode]::Create)
-                            $ResponseStream.CopyTo($OutStream)
-                            $OutStream.Close()
-                            $ResponseStream.Close()
-                        }
-                    }
-                }
                 { $_ -match "^exec" } { 
                     if ($_ -match "exec\s+(.+)") {
-                        powershell.exe -Command $Matches[1]
+                        Invoke-Expression $Matches[1]
                     }
                 }
-                { "quit", "exit" -contains $_ } { $Quit = $true; break }
+                { "quit", "exit" -contains $_ } { exit 0 }
                 Default {
                     Write-Host "Invalid command" -ForegroundColor Red
                     break
@@ -425,13 +428,15 @@ function Handle-HTTPLevel() {
 
     $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title `
         -ScriptBlock $HTTPConsoleScript `
-        -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $CurlCommand, $BrowserCommand
+        -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $BrowserCommand
             
+    $_ = $ConsoleProcess.Handle # https://stackoverflow.com/a/23797762/1479211 
+
     $ConsoleProcess.WaitForExit()
     $ConsoleExitCode = $ConsoleProcess.ExitCode
     Add-LogEntry "Exit code" "$ConsoleExitCode"
     if ($ConsoleExitCode -ne 0) {
-        throw [LevelError]::new("Web request failure", $false) 
+        throw [LevelError]::new("Web request failure (exit code: $ConsoleExitCode)", $false) 
     } 
 
     $NextPassword = Get-Clipboard
