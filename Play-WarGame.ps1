@@ -510,7 +510,7 @@ switch ($global:WargameInfo.type) {
 # Run-Level relies on `$CurrentLevel`. Really what this is doing is writing some pretty stuff to the console then running the current level in an 
 # attempt to get the password for the next level. This returns the recieved password if no errors occur or the error object if errors occur. 
 function Run-Level() {
-    
+
     $Level = [LevelInfo]::new($CurrentLevel)
 
     Clear-Content $global:LogFile # Reset log file
@@ -546,6 +546,11 @@ function Run-Level() {
             if (!(Check-UserInputForChar "`t${YELLOW}Recieved password is same as the previous level. You sure it's right?${STYLERESET} [y/n]" 'y')) {
                 throw [LevelError]::new("Next level password is incorrect", $false)
             }
+        }
+
+        $TrimedRecievedPassword = $RecievedPassword.Trim()
+        if (($TrimedRecievedPassword -ne $RecievedPassword ) -and (Check-UserInputForChar "`tPassword has leading/trailing spaces. Want to trim? [y/n]" 'y')) {
+            $RecievedPassword = $TrimedRecievedPassword
         }
     }
     catch [LevelError] {
