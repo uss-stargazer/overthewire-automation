@@ -112,34 +112,42 @@ function Wait-ForCondition() {
 }
 
 function Get-WebBrowserPath() {
-    [OutputType([string])]
+    [OutputType([string[]])]
     param ()
 
-    # Defaulting to Chrome
-    $PossibleLocations = @(
-        { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\ChromeHTML\shell\open\command')."(default)" -replace ' *--.*', '' },
-        # { return (Get-ItemProperty 'HKLM:\SOFTWARE\Mozilla\Mozilla Firefox\*\Main').PathToExe },
-        # { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\MSEdgeHTM\shell\open\command')."(default)" -replace ' *--.*', '' },
-        "C:\Program Files\Google\Chrome\Application\chrome.exe", "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", "$HOME\AppData\Local\Google\Chrome\Application\chrome.exe"
-        # "C:\Program Files\Mozilla Firefox\firefox.exe", "C:\Program Files (x86)\Mozilla Firefox\firefox.exe", "$HOME\AppData\Local\Mozilla Firefox\firefox.exe",
-        # "C:\Program Files\Microsoft\Edge\Application\msedge.exe", "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "$HOME\AppData\Local\Microsoft\Edge\Application\msedge.exe"
-    )
+    $PossibleBrowserLocations = @{ 
+        Chrome  = @(
+            { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\ChromeHTML\shell\open\command')."(default)" -replace ' *--.*', '' },
+            "C:\Program Files\Google\Chrome\Application\chrome.exe", "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", "$HOME\AppData\Local\Google\Chrome\Application\chrome.exe"
+        )
+        Firefox = @(
+            { return (Get-ItemProperty 'HKLM:\SOFTWARE\Mozilla\Mozilla Firefox\*\Main').PathToExe },
+            "C:\Program Files\Mozilla Firefox\firefox.exe", "C:\Program Files (x86)\Mozilla Firefox\firefox.exe", "$HOME\AppData\Local\Mozilla Firefox\firefox.exe"
+        )
+        MSEdge  = @(
+            { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\MSEdgeHTM\shell\open\command')."(default)" -replace ' *--.*', '' },
+            "C:\Program Files\Microsoft\Edge\Application\msedge.exe", "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "$HOME\AppData\Local\Microsoft\Edge\Application\msedge.exe"
+        )
+    } 
 
-    foreach ($Location in $PossibleLocations) {
-        if ($Location -is [scriptblock]) {
-            try {
-                $Location = $Location.Invoke()
+    
+    $BrowserLocations = $PossibleBrowserLocations | ForEach-Object {
+        foreach ($Location in $_.Value) {
+            if ($Location -is [scriptblock]) {
+                try {
+                    $Location = $Location.Invoke()
+                }
+                catch {
+                    continue
+                }
             }
-            catch {
-                continue
+            if ($Location -and ($Location.Length -gt 0) -and (Test-Path "$Location")) {
+                return $Location
             }
-        }
-        if ($Location -and ($Location.Length -gt 0) -and (Test-Path "$Location")) {
-            return $Location
         }
     }
 
-    return $null
+    return $BrowserLocations
 }
 
 class LevelInfo {
@@ -339,9 +347,9 @@ function Handle-HTTPLevel() {
     $CurlCommand = "Invoke-WebRequest -Uri `$Location -Credential `$Credentials -UseBasicParsing"
     Add-LogEntry "Command" "$CurlCommand"
     
-    $WebBrowser = Get-WebBrowserPath
-    if ($null -eq $WebBrowser) { throw "Could not find path to web browser executable (looked for Chrome)" }
-    $BrowserCommand = "& '$WebBrowser' '$LevelLocation' --guest"
+    $WebBrowsers = Get-WebBrowserPath
+    if ($WebBrowsers.Length -eq 0) { throw "Could not find path to web browser executable (looked for Chrome)" }
+    $BrowserCommand = "& '$($WebBrowsers[0])' '$LevelLocation' --guest"
     Add-LogEntry "Command" "$BrowserCommand"
 
     $HTTPConsoleScript = {
@@ -349,7 +357,8 @@ function Handle-HTTPLevel() {
             [string]$Header,
             [string]$LevelUrl,
             [string]$GetCredentialsCommand,
-            [string]$BrowserCommand
+            [string]$BrowserCommand,
+            [string[]]$BrowserPaths
         )
         Write-Host "$Header"
         $Credentials = Invoke-Command -ScriptBlock ([scriptblock]::Create($GetCredentialsCommand))
@@ -366,7 +375,8 @@ function Handle-HTTPLevel() {
                             "# When you use the curl command, a web response is 'locked in'.",
                             "# The main website url is locked in by default and can be accessed by ```$LevelUrl``",
                             "",
-                            "open, [enter]          Open locked in url in browser",
+                            "[enter]                Open level URL in default browser",
+                            "open [<browser>]       Open locked-in url in browser, If included, <browser> should be chrome|firefox|msedge",
                             "curl <url> [-o <out>]  Invoke-WebRequest with website credentials for any url and lock it in. If <out>, write to file too",
                             "content [<cmd>]        Display response data for locked (probably HTML). If <cmd>, use <cmd> as editor",
                             "header                 Display response headers",
@@ -376,9 +386,22 @@ function Handle-HTTPLevel() {
                         ) -join "`n")
                     break
                 }
-                { $_ -eq "open" -or $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
+                { $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
+                { $_ -match "^open" } { 
+                    $BrowserPath = $BrowserLocations[0]
+                    if ($_ -match "^open\s+(.+)$") {
+                        $Browser = $Matches[1].ToLower()
+                        if (!('msedge', 'firefox', 'msedge' -contains $Browser)) {
+                            Write-Error "<browser> must be chrome|firefox|msedge"
+                            break
+                        }
+                        $BrowserPath = $BrowserLocations | Where-Object { [System.IO.Path]::GetFileNameWithoutExtension("$_") -eq $Browser }
+                    }
+                    Invoke-Expression "& '$BrowserPath' ""$CurrentUrl"""
+                    break
+                }
                 { $_ -match "^curl" } {
-                    if ($_ -match "curl\s+(.+)") {
+                    if ($_ -match "^curl\s+(.+)$") {
                         $CurrentUrl = $Matches[1]
                         $OutFile = $null
                         $OIdx = $CurrentUrl.LastIndexOf("-o")
@@ -399,9 +422,10 @@ function Handle-HTTPLevel() {
                             $ResponseStream.Close()
                         }
                     }
+                    break
                 }
                 { $_ -match "^content" } { 
-                    if (($_ -match "content\s+(.+)") -and ($Matches[1].Length -gt 0)) {
+                    if (($_ -match "^content\s+(.+)$") -and ($Matches[1].Length -gt 0)) {
                         $TempFile = New-TemporaryFile
                         Set-Content $TempFile $WebResponse.Content
                         & "$($Matches[1])" "$($TempFile.FullName)"
@@ -414,7 +438,7 @@ function Handle-HTTPLevel() {
                 "header" { Write-Host $WebResponse.Headers; break }
                 "raw" { Write-Host $WebResponse.RawContent; break }
                 { $_ -match "^exec" } { 
-                    if ($_ -match "exec\s+(.+)") {
+                    if ($_ -match "^exec\s+(.+)$") {
                         Invoke-Expression $Matches[1]
                     }
                 }
@@ -429,7 +453,7 @@ function Handle-HTTPLevel() {
 
     $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title `
         -ScriptBlock $HTTPConsoleScript `
-        -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $BrowserCommand
+        -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $BrowserCommand, $BrowserLocations
             
     $_ = $ConsoleProcess.Handle # https://stackoverflow.com/a/23797762/1479211 
 
