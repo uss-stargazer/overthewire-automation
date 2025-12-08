@@ -508,7 +508,7 @@ switch ($global:WargameInfo.type) {
 # Run-Level relies on `$CurrentLevel`. Really what this is doing is writing some pretty stuff to the console then running the current level in an 
 # attempt to get the password for the next level. This returns the recieved password if no errors occur or the error object if errors occur. 
 function Run-Level() {
-
+    
     $Level = [LevelInfo]::new($CurrentLevel)
 
     Clear-Content $global:LogFile # Reset log file
@@ -524,13 +524,19 @@ function Run-Level() {
         $DisplayPassword = "$($DisplayPassword.Substring(0, $MAX_PASSWORD_DISPLAY_LEN))..."
     }
     Write-Host "`t${BOLD}Password:${STYLERESET} $DisplayPassword"
-    if (!(Check-UserInputForChar "`tAll good? (enter to continue)" ([char]13))) {
-        Write-Host "Aborting..." -ForegroundColor Red
-        exit 1
-    }
-
+    
     # This verifies the previous password and generates a new password
     try {
+        if (!(Check-UserInputForChar "`tAll good? (enter to continue)" ([char]13))) {
+            if (Check-UserInputForChar "`tIs the password wrong? [y/n]" 'y') {
+                throw [LevelError]::new("Level password is incorrect", $true)
+            }
+            else {
+                Write-Host "Aborting..." -ForegroundColor Red
+                exit 1
+            }
+        }
+        
         $RecievedPassword = & $HandleLevel $Level $LevelPasswords[$($Level.Number)]
 
         # If the passwords are the same its probably wrong...
@@ -549,14 +555,14 @@ function Run-Level() {
     return $RecievedPassword
 }
 
-if ($Level -eq -1) {
+if ($Level -eq - 1) {
     # This is normal operating mode where the levels progress and state is updated along the way
 
     $CurrentLevel = $LevelPasswords.Length - 1
 
     while ($true) {
 
-        $RecievedPassword = Run-Level # All necesary information is stored in global variables
+        $RecievedPassword = Run-Level # All necesary information is stored in script-level variables
         
         if (isException $RecievedPassword) {
             $ErrorObject = $RecievedPassword
