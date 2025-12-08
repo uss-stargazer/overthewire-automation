@@ -115,24 +115,23 @@ function Get-WebBrowserPath() {
     [OutputType([string[]])]
     param ()
 
-    $PossibleBrowserLocations = @{ 
-        Chrome  = @(
-            { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\ChromeHTML\shell\open\command')."(default)" -replace ' *--.*', '' },
-            "C:\Program Files\Google\Chrome\Application\chrome.exe", "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", "$HOME\AppData\Local\Google\Chrome\Application\chrome.exe"
-        )
-        Firefox = @(
+    $PossibleBrowserLocations = @(
+        @(
             { return (Get-ItemProperty 'HKLM:\SOFTWARE\Mozilla\Mozilla Firefox\*\Main').PathToExe },
             "C:\Program Files\Mozilla Firefox\firefox.exe", "C:\Program Files (x86)\Mozilla Firefox\firefox.exe", "$HOME\AppData\Local\Mozilla Firefox\firefox.exe"
-        )
-        MSEdge  = @(
+        ),
+        @(
+            { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\ChromeHTML\shell\open\command')."(default)" -replace ' *--.*', '' },
+            "C:\Program Files\Google\Chrome\Application\chrome.exe", "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", "$HOME\AppData\Local\Google\Chrome\Application\chrome.exe"
+        ),
+        @(
             { return (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\MSEdgeHTM\shell\open\command')."(default)" -replace ' *--.*', '' },
             "C:\Program Files\Microsoft\Edge\Application\msedge.exe", "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "$HOME\AppData\Local\Microsoft\Edge\Application\msedge.exe"
         )
-    } 
-
+    )
     
     $BrowserLocations = $PossibleBrowserLocations | ForEach-Object {
-        foreach ($Location in $_.Value) {
+        foreach ($Location in $_) {
             if ($Location -is [scriptblock]) {
                 try {
                     $Location = $Location.Invoke()
@@ -201,7 +200,7 @@ function Open-ConsoleWindow {
     # Really hacky way to get the PID and exit code of the process spawned by wt
     $PIDTemp = "$PWD\$global:Wargame.pid.tmp"
     Set-Content $ScriptFile "Set-Content '$PIDTemp' `$PID;"
-    
+
     # Parse script block and argument list
     $ArgumentList = $ArgumentList | ForEach-Object {
         return """$(
@@ -348,7 +347,7 @@ function Handle-HTTPLevel() {
     Add-LogEntry "Command" "$CurlCommand"
     
     $WebBrowsers = Get-WebBrowserPath
-    if ($WebBrowsers.Length -eq 0) { throw "Could not find path to web browser executable (looked for Chrome)" }
+    if ($WebBrowsers.Length -eq 0) { throw "Could not find path to web browser executable (looked for Chrome, Firefox and Edge)" }
     $BrowserCommand = "& '$($WebBrowsers[0])' '$LevelLocation' --guest"
     Add-LogEntry "Command" "$BrowserCommand"
 
@@ -358,8 +357,11 @@ function Handle-HTTPLevel() {
             [string]$LevelUrl,
             [string]$GetCredentialsCommand,
             [string]$BrowserCommand,
-            [string[]]$BrowserPaths
+            [string]$BrowserPaths
         )
+
+        [string[]]$BrowserPaths = $BrowserPaths -split '; '
+
         Write-Host "$Header"
         $Credentials = Invoke-Command -ScriptBlock ([scriptblock]::Create($GetCredentialsCommand))
         $CurrentUrl = $LevelUrl
@@ -388,14 +390,14 @@ function Handle-HTTPLevel() {
                 }
                 { $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
                 { $_ -match "^open" } { 
-                    $BrowserPath = $BrowserLocations[0]
+                    $BrowserPath = $BrowserPaths[0]
                     if ($_ -match "^open\s+(.+)$") {
                         $Browser = $Matches[1].ToLower()
                         if (!('msedge', 'firefox', 'msedge' -contains $Browser)) {
                             Write-Error "<browser> must be chrome|firefox|msedge"
                             break
                         }
-                        $BrowserPath = $BrowserLocations | Where-Object { [System.IO.Path]::GetFileNameWithoutExtension("$_") -eq $Browser }
+                        $BrowserPath = $BrowserPaths | Where-Object { [System.IO.Path]::GetFileNameWithoutExtension("$_") -eq $Browser }
                     }
                     Invoke-Expression "& '$BrowserPath' ""$CurrentUrl"""
                     break
@@ -453,7 +455,7 @@ function Handle-HTTPLevel() {
 
     $ConsoleProcess = Open-ConsoleWindow -WindowTitle $Level.Title `
         -ScriptBlock $HTTPConsoleScript `
-        -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $BrowserCommand, $BrowserLocations
+        -ArgumentList $LevelHeader, $LevelLocation, $GetCredentialsCommand, $BrowserCommand, ($WebBrowsers -join '; ')
             
     $_ = $ConsoleProcess.Handle # https://stackoverflow.com/a/23797762/1479211 
 
