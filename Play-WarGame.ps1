@@ -336,7 +336,7 @@ function Handle-HTTPLevel() {
     ) -join "; "
     Add-LogEntry "Command" "$GetCredentialsCommand"
 
-    $CurlCommand = "Invoke-WebRequest -Uri `$Location -Credential `$Credentials"
+    $CurlCommand = "Invoke-WebRequest -Uri `$Location -Credential `$Credentials -UseBasicParsing"
     Add-LogEntry "Command" "$CurlCommand"
     
     $WebBrowser = Get-WebBrowserPath
@@ -353,7 +353,8 @@ function Handle-HTTPLevel() {
         )
         Write-Host "$Header"
         $Credentials = Invoke-Command -ScriptBlock ([scriptblock]::Create($GetCredentialsCommand))
-        $WebResponse = Invoke-Expression "Invoke-WebRequest -Uri '$LevelUrl' -Credential `$Credentials"
+        $CurrentUrl = $LevelUrl
+        $WebResponse = Invoke-Expression "Invoke-WebRequest -Uri '$CurrentUrl' -Credential `$Credentials -UseBasicParsing"
         if (!$WebResponse) { exit 1 }
         $WebResponse
 
@@ -378,15 +379,15 @@ function Handle-HTTPLevel() {
                 { $_ -eq "open" -or $_.Length -eq 0 } { Invoke-Expression $BrowserCommand; break }
                 { $_ -match "^curl" } {
                     if ($_ -match "curl\s+(.+)") {
-                        $Location = $Matches[1]
+                        $CurrentUrl = $Matches[1]
                         $OutFile = $null
-                        $OIdx = $Location.LastIndexOf("-o")
+                        $OIdx = $CurrentUrl.LastIndexOf("-o")
                         if ($OIdx -gt 0) {
-                            $OutFile = $Location.Substring($OIdx + 2).Trim()
-                            $Location = $Location.Substring(0, $OIdx).Trim()
+                            $OutFile = $CurrentUrl.Substring($OIdx + 2).Trim()
+                            $CurrentUrl = $CurrentUrl.Substring(0, $OIdx).Trim()
                         }
             
-                        $WebResponse = Invoke-Expression "Invoke-WebRequest -Uri ""$Location"" -Credential `$Credentials"
+                        $WebResponse = Invoke-Expression "Invoke-WebRequest -Uri ""$CurrentUrl"" -Credential `$Credentials -UseBasicParsing"
                         if (!$WebResponse) { break }
                         $WebResponse
 
